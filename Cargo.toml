@@ -2,5 +2,27 @@
 name = "command_strike"
 version = "0.1.0"
 edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A command-line utility demonstrating Rust capabilities"
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
+clap = { version = "4.4", features = ["derive"] }    # Command-line argument parsing
+serde = { version = "1.0", features = ["derive"] }   # Serialization/deserialization framework
+serde_json = "1.0"                                  # JSON support for serde
+anyhow = "1.0"                                      # Error handling
+thiserror = "1.0"                                   # Error definition
+log = "0.4"                                         # Logging
+env_logger = "0.10"                                 # Logger implementation
+reqwest = { version = "0.11", features = ["json", "blocking", "stream"] } # HTTP client for API requests
+colored = "2.0"                                     # Terminal colors
+regex = "1.10"                                      # Regular expressions
+tokio = { version = "1.35", features = ["full"] }   # Async runtime
+futures-util = "0.3"                                # Async utils for streams
+lazy_static = "1.4"                                 # Lazily evaluated statics
+
+[dev-dependencies]
+assert_cmd = "2.0"                                  # Testing command-line applications
+predicates = "3.0"                                  # Assertions for testing
+mockito = "1.2"                                     # HTTP mocking for tests
