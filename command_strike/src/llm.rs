@@ -41,6 +41,60 @@ impl Default for OllamaConfig {
     }
 }
 
+/// Available LLM models with their descriptions
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    pub name: String,
+    pub description: String,
+    pub size: String,
+}
+
+impl ModelInfo {
+    pub fn new(name: &str, description: &str, size: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            size: size.to_string(),
+        }
+    }
+}
+
+/// Returns a list of recommended models for security tasks
+pub fn get_recommended_models() -> Vec<ModelInfo> {
+    vec![
+        ModelInfo::new(
+            "gemma3:12b", 
+            "Google's Gemma 3 12B model, good general performance for security tasks", 
+            "12B"
+        ),
+        ModelInfo::new(
+            "deepseek-coder:6.7b", 
+            "Model focused on code analysis and generation, useful for exploit development", 
+            "6.7B"
+        ),
+        ModelInfo::new(
+            "deepseek-r1:8b", 
+            "Lightweight yet powerful reasoning model for security analysis", 
+            "8B"
+        ),
+        ModelInfo::new(
+            "llama3:8b", 
+            "Meta's Llama 3 8B model, good balance of performance and resource usage", 
+            "8B"
+        ),
+        ModelInfo::new(
+            "phi3:14b", 
+            "Microsoft's Phi-3 large model, excellent for complex security reasoning", 
+            "14B"
+        ),
+        ModelInfo::new(
+            "mixtral:8x7b", 
+            "Mistral AI's mixture of experts model, very strong on complex security tasks", 
+            "8x7B"
+        ),
+    ]
+}
+
 /// LLM service for interacting with Ollama
 #[derive(Debug, Clone)]
 pub struct OllamaClient {
@@ -138,76 +192,130 @@ impl OllamaClient {
         }
     }
 
-    /// Generate a command based on user input and conversation history
+    /// Generate a shell command based on a natural language input
     pub async fn generate_command(&self, user_input: &str, history: &[HistoryItem]) -> Result<String> {
-        let system_prompt = format!(
-            "You are CommandStrike, a CTF assistant. Your task is to translate natural language security \
-            requests into shell commands. Output ONLY the exact command to run, nothing else. \
-            Make sure commands are safe, efficient, and well-formed. Optimize for Unix/Linux environments."
-        );
-
-        // Prepare context from history
-        let history_prompt = if !history.is_empty() {
-            let mut context = String::new();
-            context.push_str("\nPrevious commands and results:\n");
-            
-            // Include up to 3 most recent commands for context
-            for item in history.iter().rev().take(3) {
-                context.push_str(&format!(
-                    "Request: {}\nCommand: {}\nResult: {}\n\n",
-                    item.user_input, item.command, item.result
+        debug!("Generating command for input: {}", user_input);
+        
+        // Build context from history
+        let history_context = if !history.is_empty() {
+            let mut context = "Here are some previous interactions:\n\n".to_string();
+            for (i, item) in history.iter().rev().take(3).enumerate() {
+                context.push_str(&format!("Request {}: {}\nCommand: {}\nResult: {}\n\n", 
+                    i + 1, 
+                    item.user_input,
+                    item.command,
+                    item.result
                 ));
             }
             context
         } else {
-            String::new()
+            "No previous interaction history.".to_string()
         };
-
-        let full_prompt = format!(
-            "{}\n\nUser request: {}\n\nGenerate a single shell command to fulfill this request:",
-            history_prompt, user_input
-        );
-
-        debug!("Sending command generation prompt to Ollama");
-
-        // Send the request to Ollama
-        let response = self.generate_with_timeout(&full_prompt, Some(&system_prompt)).await?;
         
-        // Clean and validate the response
+        // Create the prompt for the LLM
+        let prompt = format!(
+            "Generate a shell command that accomplishes the following security task:\n\n{}\n\n{}",
+            user_input,
+            history_context
+        );
+        
+        // System prompt to guide the model's response style
+        let system = r#"You are CommandStrike, an advanced cybersecurity assistant specializing in CTF challenges and security assessments.
+
+Your task is to translate natural language security requests into precise shell commands.
+
+Guidelines:
+1. Generate ONLY the exact command that should be run, with no explanations or markdown
+2. Ensure the command is appropriate for security testing purposes
+3. Use appropriate flags and options for comprehensive results
+4. Follow security best practices for command construction
+5. For complex operations, use command chaining, pipes, or multi-step commands as needed
+6. Consider common security tools like nmap, hydra, gobuster, hashcat, metasploit when applicable
+7. Provide commands for information gathering, vulnerability scanning, and exploitation as requested
+8. Never include destructive commands unless explicitly asked to create a demo environment
+9. When analyzing files or directories, use the context from previous commands
+
+For reconnaissance and scanning:
+- Be thorough with port scanning parameters
+- Include service version detection when relevant
+- Use appropriate wordlists for directory/file enumeration
+- Consider output formatting for readability
+
+For exploitation and testing:
+- Use parameterized commands where variables might be needed
+- Include proper error handling and output redirection
+- Consider rate limiting to avoid detection
+- Use appropriate encoding/decoding tools for payloads
+
+Remember: Return ONLY the shell command with no explanation, markdown formatting, or additional text."#;
+        
+        // Call the LLM
+        let response = self.generate_with_timeout(&prompt, Some(system)).await?;
+        debug!("Raw response from LLM: {}", response);
+        
+        // Clean the response to extract just the command
         let command = self.clean_command_response(&response);
+        info!("Generated command: {}", command);
         
         Ok(command)
     }
 
     /// Interpret the results of a command execution
     pub async fn interpret_result(&self, result: &str, history: &[HistoryItem]) -> Result<String> {
-        let system_prompt = String::from(
-            "You are CommandStrike, a CTF assistant specialized in security and penetration testing. \
-            Analyze command outputs and provide clear, concise explanations focusing on security implications. \
-            Highlight important findings, vulnerabilities, and suggest next steps for further investigation. \
-            Be thorough but prioritize the most critical information first."
-        );
-
-        // Include the last command for context
-        let history_context = if !history.is_empty() {
-            let last = history.last().unwrap();
-            format!(
-                "User request: {}\nCommand executed: {}\n\n",
-                last.user_input, last.command
+        debug!("Interpreting result: {}", result);
+        
+        // Build context from the most recent command
+        let command_context = if !history.is_empty() {
+            let latest = history.last().unwrap();
+            format!("For the request: {}\nThe following command was executed: {}\n\n",
+                latest.user_input,
+                latest.command
             )
         } else {
-            String::new()
+            "No command context available.".to_string()
         };
-
-        let prompt = format!(
-            "{}Here is the output of the command:\n\n{}\n\nAnalyze these results, \
-            explaining what they mean from a security perspective and suggesting valuable next steps:",
-            history_context, result
-        );
-
-        debug!("Sending interpretation prompt to Ollama");
         
-        self.generate_with_timeout(&prompt, Some(&system_prompt)).await
+        // Create the prompt for the LLM
+        let prompt = format!(
+            "{}Here is the result of the command execution:\n\n{}\n\nPlease provide a detailed interpretation of these results from a security perspective.",
+            command_context,
+            result
+        );
+        
+        // System prompt for result interpretation
+        let system = r#"You are CommandStrike, an advanced cybersecurity assistant specializing in CTF challenges and security assessments.
+
+Your task is to interpret command output and provide security insights.
+
+Guidelines for your interpretation:
+1. Analyze the command output for security implications
+2. Identify potential vulnerabilities, attack vectors, or sensitive information
+3. Provide context on what the findings mean for security
+4. Suggest possible next steps for investigation or exploitation
+5. Highlight any interesting or unusual patterns
+6. Explain technical details in a clear, accessible way
+7. Compare results against common security benchmarks when applicable
+8. Identify false positives where relevant
+
+When analyzing scan results:
+- Identify open ports and services that might be vulnerable
+- Note unusual open ports or unexpected services
+- Highlight outdated software versions with known vulnerabilities
+- Identify misconfigured services
+
+When analyzing system information:
+- Identify privilege escalation paths
+- Note sensitive files with improper permissions
+- Highlight suspicious processes or connections
+- Identify configuration weaknesses
+
+Provide a comprehensive but concise analysis focused on actionable security insights."#;
+        
+        // Call the LLM
+        let response = self.generate_with_timeout(&prompt, Some(system)).await?;
+        debug!("Raw interpretation from LLM: {}", response);
+        
+        Ok(response)
     }
 
     /// Stream a response from the Ollama API
@@ -383,6 +491,37 @@ impl OllamaClient {
         
         cleaned.trim().to_string()
     }
+
+    /// Get a list of all locally available models from Ollama
+    pub async fn get_available_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}/api/tags", self.config.api_url);
+        
+        let response = self.client.get(&url)
+            .timeout(Duration::from_secs(self.config.timeout_secs))
+            .send()
+            .await
+            .context("Failed to connect to Ollama API")?;
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(anyhow::anyhow!("Ollama API error: {}", error_text));
+        }
+        
+        #[derive(Deserialize)]
+        struct ModelResponse {
+            models: Vec<ModelData>,
+        }
+        
+        #[derive(Deserialize)]
+        struct ModelData {
+            name: String,
+        }
+        
+        let models_data: ModelResponse = response.json().await
+            .context("Failed to parse Ollama API response")?;
+        
+        Ok(models_data.models.into_iter().map(|m| m.name).collect())
+    }
 }
 
 /// Helper function to test if Ollama is running
@@ -398,15 +537,16 @@ pub async fn check_ollama_running() -> bool {
     }
 }
 
-/// Helper function to validate the model exists
+/// Checks if the requested model is available locally, and if not, suggests pulling it
 pub async fn validate_model(model: &str) -> Result<bool> {
     let client = reqwest::Client::new();
-    let response = client
-        .get("http://localhost:11434/api/tags")
-        .send()
-        .await
-        .context("Failed to connect to Ollama API")?;
-        
+    let url = "http://localhost:11434/api/tags";
+    
+    let response = match client.get(url).send().await {
+        Ok(resp) => resp,
+        Err(_) => return Ok(false),
+    };
+    
     if !response.status().is_success() {
         return Ok(false);
     }
@@ -421,12 +561,43 @@ pub async fn validate_model(model: &str) -> Result<bool> {
         name: String,
     }
     
-    let models: ModelsResponse = response
-        .json()
+    let models_data: ModelsResponse = match response.json().await {
+        Ok(data) => data,
+        Err(_) => return Ok(false),
+    };
+    
+    Ok(models_data.models.iter().any(|m| m.name == model))
+}
+
+/// Pull the specified model from Ollama if not already available
+pub async fn pull_model(model: &str) -> Result<bool> {
+    if validate_model(model).await? {
+        return Ok(true); // Model already available
+    }
+    
+    println!("Model '{}' not found locally. Attempting to pull...", model);
+    
+    let client = reqwest::Client::new();
+    let url = "http://localhost:11434/api/pull";
+    
+    let payload = serde_json::json!({
+        "name": model
+    });
+    
+    let response = client.post(url)
+        .json(&payload)
+        .send()
         .await
-        .context("Failed to parse models response")?;
-        
-    Ok(models.models.iter().any(|m| m.name == model))
+        .context("Failed to connect to Ollama API for model pull")?;
+    
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(anyhow::anyhow!("Failed to pull model: {}", error_text));
+    }
+    
+    // Wait for pull to complete and check if model is now available
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    Ok(validate_model(model).await?)
 }
 
 #[cfg(test)]
