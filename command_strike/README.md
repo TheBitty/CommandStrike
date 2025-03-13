@@ -26,7 +26,7 @@ CommandStrike is a Rust-based CTF assistant that translates natural language sec
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/command_strike.git
+   git clone https://github.com/TheBitty/command_strike.git
    cd command_strike
    ```
 
